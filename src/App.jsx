@@ -1,4 +1,19 @@
 import { useState, useEffect } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
+
+// ─── FIREBASE ─────────────────────────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyD0RO_rDY2yJ5XeakfoOAUf08zdydE1n68",
+  authDomain: "presenze-verde.firebaseapp.com",
+  projectId: "presenze-verde",
+  storageBucket: "presenze-verde.firebasestorage.app",
+  messagingSenderId: "985438306308",
+  appId: "1:985438306308:web:09c013882f4a5a673db551",
+  measurementId: "G-2PZ6FBEESG"
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const BOSS_PASSWORD = "capo2024";
@@ -44,11 +59,17 @@ function weekKey(d) {
 function monthKey(d) { return d.slice(0, 7); }
 
 async function loadRecords() {
-  try { const r = await window.storage.get("gs_presenze_v2"); return r ? JSON.parse(r.value) : []; }
-  catch { return []; }
+  try {
+    const ref = doc(db, "greenservice", "presenze");
+    const snap = await getDoc(ref);
+    return snap.exists() ? snap.data().records : [];
+  } catch(e) { console.error("Load error:", e); return []; }
 }
 async function saveRecords(records) {
-  try { await window.storage.set("gs_presenze_v2", JSON.stringify(records)); } catch {}
+  try {
+    const ref = doc(db, "greenservice", "presenze");
+    await setDoc(ref, { records });
+  } catch(e) { console.error("Save error:", e); }
 }
 
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
