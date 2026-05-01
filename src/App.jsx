@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
 
-// ─── FIREBASE ─────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyD0RO_rDY2yJ5XeakfoOAUf08zdydE1n68",
   authDomain: "presenze-verde.firebaseapp.com",
@@ -14,13 +13,8 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
-// ─── CONFIG ───────────────────────────────────────────────────────────────────
 const BOSS_PASSWORD = "capo2024";
-
-const WORKERS = [
-  "Coran", "Hassan", "Gianni", "Italo", "Fabrizio", "Luana", "Massimiliano"
-];
-
+const WORKERS = ["Coran","Hassan","Gianni","Italo","Fabrizio","Luana","Massimiliano"];
 const SITES = [
   "Frascati - Centro Fisico Nucleare",
   "Assergi - Centro Fisico Nucleare",
@@ -31,261 +25,450 @@ const SITES = [
   "Giardino Villa del Corvo",
   "Altro...",
 ];
-
 const TIME_SLOTS = [];
 for (let h = 5; h <= 20; h++) {
   TIME_SLOTS.push(`${String(h).padStart(2,"0")}:00`);
   TIME_SLOTS.push(`${String(h).padStart(2,"0")}:30`);
 }
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-function calcHours(entry, exit) {
-  if (!entry || !exit) return 0;
-  const [eh, em] = entry.split(":").map(Number);
-  const [xh, xm] = exit.split(":").map(Number);
-  return Math.max(0, (xh * 60 + xm - (eh * 60 + em)) / 60);
+function calcHours(e, x) {
+  if (!e||!x) return 0;
+  const [eh,em]=e.split(":").map(Number), [xh,xm]=x.split(":").map(Number);
+  return Math.max(0,(xh*60+xm-(eh*60+em))/60);
 }
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return new Date().toISOString().slice(0,10); }
 function weekKey(d) {
-  const dt = new Date(d); const day = dt.getDay() || 7;
-  const mon = new Date(dt); mon.setDate(dt.getDate() - day + 1);
-  return mon.toISOString().slice(0, 10);
+  const dt=new Date(d),day=dt.getDay()||7,mon=new Date(dt);
+  mon.setDate(dt.getDate()-day+1); return mon.toISOString().slice(0,10);
 }
-function monthKey(d) { return d.slice(0, 7); }
-function formatDate(d) {
-  return new Date(d + "T12:00:00").toLocaleDateString("it-IT", { weekday:"short", day:"2-digit", month:"2-digit" });
-}
+function monthKey(d) { return d.slice(0,7); }
+function fmtDate(d) { return new Date(d+"T12:00:00").toLocaleDateString("it-IT",{weekday:"short",day:"2-digit",month:"2-digit"}); }
 
-// ─── FIREBASE ─────────────────────────────────────────────────────────────────
-async function loadRecords() {
+async function loadData() {
   try {
-    const ref = doc(db, "greenservice", "presenze");
-    const snap = await getDoc(ref);
-    return snap.exists() ? snap.data().records : [];
-  } catch(e) { console.error("Load error:", e); return []; }
+    const snap = await getDoc(doc(db,"greenservice","presenze"));
+    const msnap = await getDoc(doc(db,"greenservice","memo"));
+    return {
+      records: snap.exists() ? snap.data().records : [],
+      memo: msnap.exists() ? msnap.data().text : ""
+    };
+  } catch(e) { return { records:[], memo:"" }; }
 }
 async function saveRecords(records) {
-  try {
-    const ref = doc(db, "greenservice", "presenze");
-    await setDoc(ref, { records });
-  } catch(e) { console.error("Save error:", e); }
+  try { await setDoc(doc(db,"greenservice","presenze"),{records}); } catch(e){}
+}
+async function saveMemo(text) {
+  try { await setDoc(doc(db,"greenservice","memo"),{text}); } catch(e){}
 }
 
-// ─── EXPORT ───────────────────────────────────────────────────────────────────
 function exportExcel(records, label) {
-  const rows = [["Data","Operaio","Ingresso","Uscita","Ore","Giornate","Cantiere"]];
-  records.forEach(r => {
-    const h = r.exit ? calcHours(r.entry, r.exit) : 0;
-    rows.push([r.date, r.worker, r.entry||"", r.exit||"", h.toFixed(1), r.exit?"1":"0", r.site||""]);
+  const rows=[["Data","Operaio","Ingresso","Uscita","Ore","Giornate","Cantiere"]];
+  records.forEach(r=>{
+    const h=r.exit?calcHours(r.entry,r.exit):0;
+    rows.push([r.date,r.worker,r.entry||"",r.exit||"",h.toFixed(1),r.exit?"1":"0",r.site||""]);
   });
-  const csv = rows.map(r => r.map(c => `"${c}"`).join(",")).join("\n");
-  const blob = new Blob(["\uFEFF"+csv], { type:"text/csv;charset=utf-8;" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-  a.download = `GreenService_${label}.csv`; a.click();
+  const csv=rows.map(r=>r.map(c=>`"${c}"`).join(",")).join("\n");
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"}));
+  a.download=`GreenService_${label}.csv`; a.click();
 }
-
 function exportPDF(records, label) {
-  // Group by worker for summary
-  const summary = {};
-  WORKERS.forEach(w => { summary[w] = { hours: 0, days: 0 }; });
-  records.forEach(r => {
-    if (!summary[r.worker]) summary[r.worker] = { hours: 0, days: 0 };
-    if (r.exit) {
-      summary[r.worker].hours += calcHours(r.entry, r.exit);
-      summary[r.worker].days += 1;
-    }
-  });
-
-  const detailRows = records.map(r => {
-    const h = r.exit ? calcHours(r.entry, r.exit) : 0;
-    return `<tr>
-      <td>${new Date(r.date+"T12:00:00").toLocaleDateString("it-IT")}</td>
-      <td><b>${r.worker}</b></td>
-      <td>${r.entry||"—"}</td>
-      <td>${r.exit||"—"}</td>
-      <td style="color:#2D5A27;font-weight:700">${h>0?h.toFixed(1)+"h":"—"}</td>
-      <td style="text-align:center">${r.exit?"✅":"—"}</td>
-      <td style="font-size:11px;color:#666">${r.site||"—"}</td>
-    </tr>`;
+  const summary={};
+  WORKERS.forEach(w=>{summary[w]={hours:0,days:0}});
+  records.forEach(r=>{ if(r.exit&&summary[r.worker]){summary[r.worker].hours+=calcHours(r.entry,r.exit);summary[r.worker].days++;} });
+  const sRows=Object.entries(summary).map(([n,d])=>`<tr><td><b>${n}</b></td><td style="color:#2D5A27;font-weight:700">${d.hours.toFixed(1)}h</td><td style="font-weight:700">${d.days} gg</td></tr>`).join("");
+  const dRows=records.map(r=>{
+    const h=r.exit?calcHours(r.entry,r.exit):0;
+    return `<tr><td>${new Date(r.date+"T12:00:00").toLocaleDateString("it-IT")}</td><td><b>${r.worker}</b></td><td>${r.entry||"—"}</td><td>${r.exit||"—"}</td><td style="color:#2D5A27;font-weight:700">${h>0?h.toFixed(1)+"h":"—"}</td><td>${r.exit?"✅":"—"}</td><td style="font-size:11px;color:#666">${r.site||"—"}</td></tr>`;
   }).join("");
-
-  const summaryRows = Object.entries(summary).map(([name, data]) =>
-    `<tr><td><b>${name}</b></td><td style="color:#2D5A27;font-weight:700">${data.hours.toFixed(1)}h</td><td style="font-weight:700">${data.days} gg</td></tr>`
-  ).join("");
-
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Green Service — ${label}</title>
-  <style>
-    body{font-family:Georgia,serif;padding:32px;color:#2A3828;max-width:900px;margin:0 auto}
-    h1{color:#2D5A27;font-size:28px;margin-bottom:4px}
-    h2{color:#2D5A27;font-size:16px;margin:24px 0 10px}
-    .sub{color:#888;font-size:13px;margin-bottom:28px}
-    table{width:100%;border-collapse:collapse;margin-bottom:24px}
-    th{background:#2D5A27;color:white;padding:8px 10px;text-align:left;font-size:11px;letter-spacing:1px;text-transform:uppercase}
-    td{padding:7px 10px;border-bottom:1px solid #E8DFD0;font-size:13px}
-    tr:nth-child(even){background:#faf7f2}
-    .footer{margin-top:24px;font-size:11px;color:#aaa;text-align:right}
-    .logo{font-size:40px;margin-bottom:8px}
-  </style></head><body>
-  <div class="logo">🌳</div>
-  <h1>Green Service</h1>
-  <div class="sub">Riepilogo presenze — ${label} — Stampato il ${new Date().toLocaleDateString("it-IT")}</div>
-
-  <h2>📊 Riepilogo per operaio</h2>
-  <table><thead><tr><th>Operaio</th><th>Ore totali</th><th>Giornate</th></tr></thead>
-  <tbody>${summaryRows}</tbody></table>
-
-  <h2>📋 Dettaglio presenze</h2>
-  <table><thead><tr><th>Data</th><th>Operaio</th><th>Ingresso</th><th>Uscita</th><th>Ore</th><th>Giornata</th><th>Cantiere</th></tr></thead>
-  <tbody>${detailRows}</tbody></table>
-  <div class="footer">Green Service — documento generato automaticamente</div>
-  </body></html>`;
-
-  const blob = new Blob([html], { type:"text/html" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-  a.download = `GreenService_${label}.html`; a.click();
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Green Service</title>
+  <style>body{font-family:Georgia,serif;padding:32px;color:#2A3828;max-width:900px;margin:0 auto}h1{color:#2D5A27;font-size:28px}h2{color:#2D5A27;font-size:16px;margin:20px 0 8px}.sub{color:#888;font-size:13px;margin-bottom:24px}table{width:100%;border-collapse:collapse;margin-bottom:20px}th{background:#2D5A27;color:white;padding:8px 10px;text-align:left;font-size:11px;letter-spacing:1px}td{padding:7px 10px;border-bottom:1px solid #E8DFD0;font-size:13px}tr:nth-child(even){background:#faf7f2}.footer{margin-top:20px;font-size:11px;color:#aaa;text-align:right}</style>
+  </head><body><h1>🌳 Green Service</h1><div class="sub">Presenze — ${label} — ${new Date().toLocaleDateString("it-IT")}</div>
+  <h2>Riepilogo operai</h2><table><thead><tr><th>Operaio</th><th>Ore</th><th>Giornate</th></tr></thead><tbody>${sRows}</tbody></table>
+  <h2>Dettaglio</h2><table><thead><tr><th>Data</th><th>Operaio</th><th>Ingresso</th><th>Uscita</th><th>Ore</th><th>Gg</th><th>Cantiere</th></tr></thead><tbody>${dRows}</tbody></table>
+  <div class="footer">Green Service — generato automaticamente</div></body></html>`;
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([html],{type:"text/html"}));
+  a.download=`GreenService_${label}.html`; a.click();
 }
 
-// ─── CSS ──────────────────────────────────────────────────────────────────────
+// ─── WORKER AVATAR COLORS ─────────────────────────────────────────────────────
+const AVATAR_COLORS = [
+  "#2D5A27","#3D7A35","#5A6E2A","#1A4A30","#4A6741","#2A5040","#3A5530"
+];
+
 const css = `
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --cream:#F5F0E8;--panna:#FBF8F2;--beige:#E8DFD0;
-  --green:#2D5A27;--green2:#3D7A35;--green3:#5A9E50;--sage:#8FAF8A;
-  --text:#2A3828;--muted:#7A8C77;--border:#D4C9B5;--white:#FEFCF8;
-  --red:#E74C3C;--yellow:#F39C12;
+  --forest:#1A3320;
+  --green:#2D5A27;
+  --green2:#3D7A35;
+  --sage:#7A9E75;
+  --gold:#C8A84B;
+  --gold2:#E5C86A;
+  --cream:#F7F3EC;
+  --panna:#FDFAF5;
+  --beige:#EDE5D8;
+  --text:#1C2B1A;
+  --muted:#7A8C77;
+  --border:#D8CFBE;
+  --white:#FFFFFF;
+  --red:#C0392B;
 }
-body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--text);min-height:100vh}
 
-/* HEADER */
-.header{background:var(--green);padding:14px 24px;display:flex;align-items:center;justify-content:space-between}
-.header-logo{font-family:'Playfair Display',serif;font-weight:900;font-size:20px;color:var(--panna);display:flex;align-items:center;gap:10px}
-.header-badge{background:rgba(255,255,255,.15);color:var(--panna);font-size:10px;font-weight:600;padding:3px 10px;border-radius:20px;letter-spacing:1.5px;text-transform:uppercase;border:1px solid rgba(255,255,255,.2)}
-.logout-btn{background:transparent;border:1px solid rgba(255,255,255,.3);color:rgba(255,255,255,.7);padding:6px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-family:'DM Sans',sans-serif;transition:all .2s}
-.logout-btn:hover{background:rgba(255,255,255,.1);color:white}
+html{-webkit-tap-highlight-color:transparent}
+body{
+  font-family:'Outfit',sans-serif;
+  background:var(--cream);
+  color:var(--text);
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
 
-/* LOGIN */
-.login-wrap{min-height:100vh;background:linear-gradient(160deg,#EAE4D8 0%,#F5F0E8 50%,#E8F0E6 100%);display:flex;align-items:center;justify-content:center;padding:20px}
-.login-card{background:var(--white);border:1px solid var(--border);border-radius:16px;padding:48px 40px;width:100%;max-width:400px;box-shadow:0 8px 40px rgba(45,90,39,.10);position:relative;overflow:hidden}
-.login-card::before{content:'';position:absolute;top:0;left:0;right:0;height:5px;background:linear-gradient(90deg,var(--green),var(--green3),var(--sage));border-radius:16px 16px 0 0}
-.brand-icon{font-size:56px;text-align:center;margin-bottom:16px;display:block}
-.login-title{font-family:'Playfair Display',serif;font-weight:900;font-size:32px;text-align:center;color:var(--green);margin-bottom:6px}
-.login-sub{text-align:center;color:var(--muted);font-size:14px;margin-bottom:32px}
-label{display:block;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
-.field{margin-bottom:20px}
-input[type=password]{width:100%;background:var(--panna);border:1.5px solid var(--border);color:var(--text);padding:13px 16px;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:16px;outline:none;transition:border-color .2s}
-input[type=password]:focus{border-color:var(--green)}
-.btn-primary{width:100%;background:linear-gradient(135deg,var(--green),var(--green2));color:white;border:none;padding:14px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;cursor:pointer;border-radius:8px;transition:all .2s;box-shadow:0 4px 14px rgba(45,90,39,.25)}
-.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(45,90,39,.3)}
-.error-msg{background:#FDF0EE;border:1.5px solid #E07060;color:#C0392B;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
+/* ── LOGIN ── */
+.login-bg{
+  min-height:100vh;
+  background:linear-gradient(165deg, #0D1F12 0%, #1A3320 40%, #2D5A27 100%);
+  display:flex; align-items:center; justify-content:center;
+  padding:24px; position:relative; overflow:hidden;
+}
+.login-bg::before{
+  content:'';
+  position:absolute; inset:0;
+  background:url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+.login-card{
+  background:rgba(253,250,245,0.97);
+  border-radius:28px;
+  padding:48px 36px;
+  width:100%; max-width:380px;
+  box-shadow:0 32px 80px rgba(0,0,0,0.4), 0 0 0 1px rgba(200,168,75,0.3);
+  position:relative;
+  animation:slideUp .5s cubic-bezier(.16,1,.3,1) both;
+}
+.login-card::before{
+  content:'';
+  position:absolute; top:0; left:50%; transform:translateX(-50%);
+  width:60%; height:3px;
+  background:linear-gradient(90deg, transparent, var(--gold), transparent);
+  border-radius:0 0 3px 3px;
+}
+.login-logo{
+  width:100px; height:100px;
+  border-radius:22px;
+  margin:0 auto 20px;
+  display:block;
+  object-fit:cover;
+  box-shadow:0 8px 24px rgba(45,90,39,0.25);
+}
+.login-title{
+  font-family:'Cormorant Garamond',serif;
+  font-size:34px; font-weight:700;
+  text-align:center; color:var(--forest);
+  margin-bottom:4px; letter-spacing:.5px;
+}
+.login-sub{
+  text-align:center; color:var(--muted);
+  font-size:13px; margin-bottom:36px;
+  font-weight:300; letter-spacing:.5px;
+}
+.input-wrap{margin-bottom:16px}
+.input-label{
+  display:block; font-size:10px; font-weight:600;
+  letter-spacing:2px; text-transform:uppercase;
+  color:var(--muted); margin-bottom:8px;
+}
+.input-field{
+  width:100%; background:var(--cream);
+  border:1.5px solid var(--border); color:var(--text);
+  padding:14px 18px; border-radius:14px;
+  font-family:'Outfit',sans-serif; font-size:16px;
+  outline:none; transition:all .2s;
+}
+.input-field:focus{border-color:var(--gold); background:var(--panna); box-shadow:0 0 0 3px rgba(200,168,75,0.1)}
+.btn-login{
+  width:100%;
+  background:linear-gradient(135deg, var(--forest), var(--green));
+  color:white; border:none; padding:16px;
+  font-family:'Outfit',sans-serif; font-size:15px; font-weight:600;
+  cursor:pointer; border-radius:14px; transition:all .25s;
+  box-shadow:0 6px 20px rgba(26,51,32,0.35);
+  letter-spacing:.5px; margin-top:4px;
+}
+.btn-login:hover{transform:translateY(-1px); box-shadow:0 10px 28px rgba(26,51,32,0.4)}
+.btn-login:active{transform:translateY(0)}
+.err{
+  background:#FDF0EE; border:1px solid #E07060;
+  color:var(--red); padding:10px 14px;
+  border-radius:10px; font-size:13px; margin-bottom:14px; text-align:center;
+}
 
-/* MAIN PANEL */
-.main{padding:20px;max-width:1100px;margin:0 auto}
-.page-title{font-family:'Playfair Display',serif;font-weight:900;font-size:26px;color:var(--green);margin-bottom:4px}
-.page-date{color:var(--muted);font-size:13px;margin-bottom:24px}
+/* ── HEADER ── */
+.header{
+  background:linear-gradient(135deg, var(--forest) 0%, var(--green) 100%);
+  padding:env(safe-area-inset-top,16px) 20px 16px;
+  padding-top:calc(env(safe-area-inset-top,0px) + 16px);
+  display:flex; align-items:center; justify-content:space-between;
+  position:sticky; top:0; z-index:100;
+  box-shadow:0 2px 20px rgba(0,0,0,0.2);
+}
+.header-left{display:flex;align-items:center;gap:12px}
+.header-logo-img{
+  width:36px;height:36px;border-radius:10px;
+  object-fit:cover;border:1.5px solid rgba(200,168,75,0.5);
+}
+.header-name{
+  font-family:'Cormorant Garamond',serif;
+  font-size:20px;font-weight:700;color:white;letter-spacing:.5px;
+}
+.header-date{font-size:11px;color:rgba(255,255,255,.6);font-weight:300;margin-top:1px}
+.btn-exit{
+  background:rgba(255,255,255,.1);
+  border:1px solid rgba(255,255,255,.2);
+  color:rgba(255,255,255,.8); padding:7px 14px;
+  border-radius:20px; cursor:pointer; font-size:12px;
+  font-family:'Outfit',sans-serif; transition:all .2s;
+  font-weight:500;
+}
+.btn-exit:hover{background:rgba(255,255,255,.2);color:white}
 
-/* TABS */
-.tabs{display:flex;gap:8px;margin-bottom:24px;border-bottom:2px solid var(--border);padding-bottom:0}
-.tab{padding:10px 20px;border:none;background:transparent;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .2s}
-.tab.active{color:var(--green);border-bottom-color:var(--green)}
-.tab:hover{color:var(--green)}
+/* ── BOTTOM NAV ── */
+.bottom-nav{
+  position:fixed; bottom:0; left:0; right:0;
+  background:rgba(253,250,245,0.97);
+  backdrop-filter:blur(20px);
+  border-top:1px solid var(--border);
+  display:flex; padding:8px 0 calc(env(safe-area-inset-bottom,0px) + 8px);
+  z-index:100;
+  box-shadow:0 -4px 20px rgba(0,0,0,0.08);
+}
+.nav-item{
+  flex:1; display:flex; flex-direction:column;
+  align-items:center; gap:3px; cursor:pointer;
+  padding:6px 4px; border:none; background:transparent;
+  font-family:'Outfit',sans-serif; transition:all .2s;
+}
+.nav-icon{font-size:22px;transition:transform .2s}
+.nav-label{font-size:10px;font-weight:600;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;transition:color .2s}
+.nav-item.active .nav-icon{transform:scale(1.15)}
+.nav-item.active .nav-label{color:var(--green)}
+.nav-item.active{position:relative}
+.nav-item.active::after{content:'';position:absolute;bottom:-8px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--gold)}
 
-/* WORKER CARDS */
-.workers-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-bottom:24px}
-.worker-card{background:var(--white);border:1.5px solid var(--border);border-radius:12px;padding:18px;cursor:pointer;transition:all .2s;box-shadow:0 2px 8px rgba(45,90,39,.05)}
-.worker-card:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(45,90,39,.12);border-color:var(--green)}
-.worker-card.active-card{border-color:var(--green);background:#F0F7EE}
-.worker-name{font-family:'Playfair Display',serif;font-weight:700;font-size:17px;color:var(--green);margin-bottom:8px}
-.worker-status{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:10px}
-.status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.dot-green{background:#2ECC71;box-shadow:0 0 6px #2ECC71}
-.dot-orange{background:var(--yellow)}
-.dot-gray{background:#ccc}
-.worker-stats{display:flex;gap:12px}
-.wstat{text-align:center}
-.wstat-num{font-family:'Playfair Display',serif;font-size:20px;font-weight:900;color:var(--green);line-height:1}
-.wstat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+/* ── MAIN CONTENT ── */
+.main{
+  padding:20px 16px calc(env(safe-area-inset-bottom,0px) + 90px);
+  max-width:600px; margin:0 auto;
+}
 
-/* SEGNA PRESENZA */
-.presence-form{background:var(--white);border:1.5px solid var(--border);border-radius:12px;padding:24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(45,90,39,.06)}
-.form-title{font-family:'Playfair Display',serif;font-weight:700;font-size:20px;color:var(--green);margin-bottom:20px;display:flex;align-items:center;gap:10px}
-.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-select,input[type=text],input[type=date]{width:100%;background:var(--panna);border:1.5px solid var(--border);color:var(--text);padding:10px 14px;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:14px;outline:none;transition:border-color .2s;appearance:none}
-select:focus,input:focus{border-color:var(--green)}
-.btn-green{background:var(--green);color:white;border:none;padding:11px 20px;border-radius:8px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;transition:all .2s}
-.btn-green:hover{background:var(--green2)}
-.btn-red{background:#FDF0EE;color:var(--red);border:1px solid #f0c0b0;padding:11px 20px;border-radius:8px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;transition:all .2s}
-.btn-yellow{background:#FEF9EC;color:#B8860B;border:1px solid #f0d890;padding:11px 20px;border-radius:8px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;transition:all .2s}
-.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+/* ── MEMO BANNER ── */
+.memo-banner{
+  background:linear-gradient(135deg, rgba(200,168,75,0.12), rgba(200,168,75,0.06));
+  border:1px solid rgba(200,168,75,0.3);
+  border-radius:14px; padding:14px 16px;
+  margin-bottom:18px; display:flex; align-items:center; gap:10px;
+}
+.memo-dot{width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0;box-shadow:0 0 8px rgba(200,168,75,.5)}
+.memo-text{font-size:13px;color:var(--text);font-weight:400;flex:1;font-style:italic}
+.memo-edit{font-size:16px;cursor:pointer;opacity:.6}
 
-/* SEGNA TUTTI */
-.tutti-card{background:linear-gradient(135deg,var(--green),var(--green2));border-radius:12px;padding:20px 24px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
-.tutti-text{color:white}
-.tutti-title{font-family:'Playfair Display',serif;font-size:18px;font-weight:700;margin-bottom:4px}
-.tutti-sub{font-size:13px;opacity:.8}
-.btn-white{background:white;color:var(--green);border:none;padding:11px 20px;border-radius:8px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;transition:all .2s;white-space:nowrap}
-.btn-white:hover{background:var(--panna)}
+/* ── SECTION TITLE ── */
+.section-title{
+  font-family:'Cormorant Garamond',serif;
+  font-size:22px; font-weight:700; color:var(--forest);
+  margin-bottom:14px; display:flex; align-items:center; gap:8px;
+}
+.section-sub{font-size:12px;color:var(--muted);font-weight:400;margin-left:auto}
 
-/* RIEPILOGO */
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:24px}
-.summary-card{background:var(--white);border:1.5px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 2px 8px rgba(45,90,39,.05)}
-.sum-name{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:8px}
-.sum-hours{font-family:'Playfair Display',serif;font-size:32px;font-weight:900;color:var(--green);line-height:1}
-.sum-days{font-size:12px;color:var(--muted);margin-top:4px}
+/* ── QUICK ACTIONS ── */
+.quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:22px}
+.quick-btn{
+  background:var(--panna);
+  border:1.5px solid var(--border);
+  border-radius:16px; padding:16px 14px;
+  cursor:pointer; transition:all .2s;
+  display:flex; flex-direction:column; align-items:flex-start; gap:6px;
+  text-align:left;
+}
+.quick-btn:active{transform:scale(.97)}
+.quick-btn.green{background:linear-gradient(135deg,var(--green),var(--green2));border-color:transparent;color:white}
+.quick-btn.gold{background:linear-gradient(135deg,#8B6914,var(--gold));border-color:transparent;color:white}
+.quick-btn.red{background:linear-gradient(135deg,#7A2020,#C0392B);border-color:transparent;color:white}
+.quick-icon{font-size:24px}
+.quick-label{font-size:12px;font-weight:600;letter-spacing:.3px;line-height:1.3}
+.quick-sub{font-size:10px;opacity:.7;font-weight:400}
 
-/* TABLE */
-.table-wrap{background:var(--white);border:1.5px solid var(--border);border-radius:12px;overflow:hidden;overflow-x:auto;box-shadow:0 2px 8px rgba(45,90,39,.05)}
-.rtable{width:100%;border-collapse:collapse}
-.rtable th{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--muted);padding:10px;text-align:left;background:var(--panna);border-bottom:1.5px solid var(--border)}
-.rtable td{padding:9px 10px;font-size:13px;border-bottom:1px solid var(--beige)}
-.rtable tr:last-child td{border-bottom:none}
-.rtable tr:hover td{background:#F7F4EE}
-.pill{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
-.pill-green{background:#EEF6EC;color:var(--green)}
-.pill-yellow{background:#FEF9EC;color:#B8860B}
-.pill-gray{background:var(--beige);color:var(--muted)}
+/* ── WORKER CARDS ── */
+.workers-list{display:flex;flex-direction:column;gap:10px;margin-bottom:22px}
+.worker-card{
+  background:var(--panna);
+  border-radius:18px;
+  border:1.5px solid var(--border);
+  padding:16px;
+  display:flex; align-items:center; gap:14px;
+  cursor:pointer; transition:all .25s;
+  box-shadow:0 2px 8px rgba(0,0,0,0.04);
+  position:relative; overflow:hidden;
+}
+.worker-card::before{
+  content:'';
+  position:absolute; left:0; top:0; bottom:0;
+  width:4px; border-radius:4px 0 0 4px;
+  background:var(--status-color, #ccc);
+  transition:background .3s;
+}
+.worker-card:active{transform:scale(.98)}
+.worker-avatar{
+  width:46px;height:46px;border-radius:14px;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Cormorant Garamond',serif;
+  font-size:18px;font-weight:700;color:white;
+  flex-shrink:0;
+  box-shadow:0 3px 10px rgba(0,0,0,0.15);
+}
+.worker-info{flex:1;min-width:0}
+.worker-name{font-size:15px;font-weight:600;color:var(--text);margin-bottom:3px}
+.worker-status-text{font-size:12px;color:var(--muted);font-weight:400}
+.worker-stats{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.stat-hours{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;color:var(--green);line-height:1}
+.stat-days{font-size:10px;color:var(--muted);font-weight:500;letter-spacing:.5px}
+.status-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 8px;border-radius:20px;
+  font-size:10px;font-weight:600;letter-spacing:.3px;
+  margin-top:3px;
+}
+.pill-done{background:#E8F5E4;color:#2D6B27}
+.pill-work{background:#FEF9EC;color:#8B6914}
+.pill-absent{background:var(--beige);color:var(--muted)}
 
-/* SETTIMANALE */
-.week-grid{overflow-x:auto}
-.week-table{border-collapse:collapse;width:100%;min-width:600px}
-.week-table th{background:var(--green);color:white;padding:10px 8px;font-size:12px;font-weight:600;text-align:center;border:1px solid rgba(255,255,255,.1)}
-.week-table td{padding:8px;border:1px solid var(--border);text-align:center;font-size:12px;vertical-align:middle;background:var(--white)}
-.week-table .worker-col{text-align:left;font-weight:600;background:var(--panna);padding:8px 12px}
-.day-cell-done{background:#EEF6EC!important;color:var(--green);font-weight:600}
-.day-cell-partial{background:#FEF9EC!important;color:#B8860B}
-.day-cell-absent{color:#ccc}
+/* ── FORM CARD ── */
+.form-card{
+  background:var(--panna);
+  border:1.5px solid var(--border);
+  border-radius:18px; padding:20px;
+  margin-bottom:16px;
+  box-shadow:0 2px 12px rgba(0,0,0,0.05);
+}
+.form-title{
+  font-family:'Cormorant Garamond',serif;
+  font-size:20px;font-weight:700;color:var(--forest);
+  margin-bottom:18px;
+}
+.field{margin-bottom:14px}
+.field-label{
+  display:block;font-size:10px;font-weight:600;
+  letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--muted);margin-bottom:6px;
+}
+select,input[type=text],input[type=date],input[type=month]{
+  width:100%;background:var(--cream);
+  border:1.5px solid var(--border);color:var(--text);
+  padding:12px 14px;border-radius:12px;
+  font-family:'Outfit',sans-serif;font-size:14px;
+  outline:none;transition:all .2s;appearance:none;
+}
+select:focus,input:focus{border-color:var(--green);background:var(--panna);box-shadow:0 0 0 3px rgba(45,90,39,0.08)}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btn-action{
+  padding:13px 20px;border:none;border-radius:12px;
+  cursor:pointer;font-family:'Outfit',sans-serif;
+  font-size:14px;font-weight:600;transition:all .2s;
+  letter-spacing:.3px;
+}
+.btn-action:active{transform:scale(.97)}
+.btn-action.primary{background:var(--green);color:white;box-shadow:0 4px 14px rgba(45,90,39,.25)}
+.btn-action.secondary{background:var(--gold);color:white;box-shadow:0 4px 14px rgba(200,168,75,.3)}
+.btn-action.danger{background:#FDF0EE;color:var(--red);border:1px solid #f0c0b0}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
+.btn-full{width:100%}
 
-/* FILTRI */
-.filter-row{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;align-items:flex-end}
-.filter-row .field{margin-bottom:0;flex:1;min-width:140px}
-.export-btns{display:flex;gap:8px}
+/* ── TOAST ── */
+.toast{
+  position:fixed;top:calc(env(safe-area-inset-top,0px) + 80px);
+  left:50%;transform:translateX(-50%);
+  background:var(--forest);color:white;
+  padding:12px 24px;border-radius:100px;
+  font-size:13px;font-weight:500;
+  box-shadow:0 8px 24px rgba(0,0,0,0.3);
+  z-index:200;white-space:nowrap;
+  animation:toastIn .3s cubic-bezier(.16,1,.3,1);
+}
+.toast.error{background:#C0392B}
 
-/* SECTION LABEL */
-.section-label{font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:12px;display:flex;align-items:center;gap:8px}
-.section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+/* ── SUMMARY CARDS ── */
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:20px}
+.sum-card{
+  background:var(--panna);border:1.5px solid var(--border);
+  border-radius:16px;padding:16px;
+  box-shadow:0 2px 8px rgba(0,0,0,0.04);
+}
+.sum-name{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.sum-h{font-family:'Cormorant Garamond',serif;font-size:34px;font-weight:700;color:var(--green);line-height:1}
+.sum-d{font-size:11px;color:var(--muted);margin-top:3px}
 
-.no-records{text-align:center;padding:40px;color:var(--muted);font-size:14px}
-.success-msg{background:#EEF6EC;border:1.5px solid var(--green3);color:var(--green);padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
-.error-msg2{background:#FDF0EE;border:1.5px solid #E07060;color:#C0392B;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
+/* ── WEEK TABLE ── */
+.week-wrap{overflow-x:auto;border-radius:16px;border:1.5px solid var(--border);background:var(--panna)}
+.week-table{width:100%;border-collapse:collapse;min-width:500px}
+.week-table th{background:var(--forest);color:white;padding:10px 8px;font-size:11px;font-weight:600;text-align:center;letter-spacing:.5px}
+.week-table th:first-child{text-align:left;padding-left:14px}
+.week-table td{padding:10px 8px;border-bottom:1px solid var(--beige);text-align:center;font-size:12px}
+.week-table tr:last-child td{border-bottom:none}
+.wname{text-align:left!important;padding-left:14px!important;font-weight:600;font-size:13px}
+.wcell-done{background:#E8F5E4;color:#2D6B27;font-weight:600;border-radius:6px}
+.wcell-wip{background:#FEF9EC;color:#8B6914}
+.wcell-no{color:#ccc}
+.wtot{font-family:'Cormorant Garamond',serif;font-size:18px;font-weight:700;color:var(--green)}
 
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-.main{animation:fadeUp .3s ease}
-@media(max-width:600px){.form-grid{grid-template-columns:1fr}.workers-grid{grid-template-columns:1fr 1fr}.summary-grid{grid-template-columns:1fr 1fr}.main{padding:14px}}
+/* ── TABLE ── */
+.tbl-wrap{border-radius:16px;overflow:hidden;border:1.5px solid var(--border);overflow-x:auto}
+.tbl{width:100%;border-collapse:collapse;min-width:500px}
+.tbl th{background:var(--forest);color:white;padding:10px;font-size:10px;font-weight:600;text-align:left;letter-spacing:1px;text-transform:uppercase}
+.tbl td{padding:10px;font-size:12px;border-bottom:1px solid var(--beige);background:var(--panna)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:var(--cream)}
+
+/* ── MISC ── */
+.chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.chip-g{background:#E8F5E4;color:#2D6B27}
+.chip-y{background:#FEF9EC;color:#8B6914}
+.chip-n{background:var(--beige);color:var(--muted)}
+.no-data{text-align:center;padding:40px;color:var(--muted);font-size:14px}
+.divider{height:1px;background:var(--beige);margin:20px 0}
+.filter-row{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap;align-items:flex-end}
+.filter-row .field{margin-bottom:0;flex:1;min-width:120px}
+.export-row{display:flex;gap:8px}
+.btn-export{padding:10px 14px;border:none;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;font-family:'Outfit',sans-serif;transition:all .2s}
+.btn-export:active{transform:scale(.96)}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:300;display:flex;align-items:flex-end;justify-content:center;padding:20px;backdrop-filter:blur(4px)}
+.modal{background:var(--panna);border-radius:24px 24px 16px 16px;padding:28px 24px;width:100%;max-width:500px;animation:slideUp .35s cubic-bezier(.16,1,.3,1)}
+.modal-title{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;color:var(--forest);margin-bottom:20px}
+
+@keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,-10px)}to{opacity:1;transform:translate(-50%,0)}}
 `;
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [records, setRecords]   = useState([]);
+  const [memo, setMemo]         = useState("");
   const [loading, setLoading]   = useState(true);
 
-  useEffect(() => { loadRecords().then(r => { setRecords(r); setLoading(false); }); }, []);
+  useEffect(() => {
+    loadData().then(d => { setRecords(d.records); setMemo(d.memo); setLoading(false); });
+  }, []);
+
   async function updateRecords(r) { setRecords(r); await saveRecords(r); }
+  async function updateMemo(t) { setMemo(t); await saveMemo(t); }
 
   if (loading) return (
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#F5F0E8",color:"#7A8C77",fontFamily:"DM Sans,sans-serif",flexDirection:"column",gap:12}}>
-      <style>{css}</style><span style={{fontSize:40}}>🌿</span><span>Caricamento...</span>
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#1A3320",color:"rgba(255,255,255,.6)",fontFamily:"Outfit,sans-serif",flexDirection:"column",gap:16}}>
+      <style>{css}</style>
+      <img src="/icon-192.png" style={{width:72,height:72,borderRadius:18,opacity:.8}} onError={e=>{e.target.style.display='none'}} />
+      <span style={{fontSize:14,letterSpacing:1}}>Caricamento...</span>
     </div>
   );
 
@@ -293,8 +476,8 @@ export default function App() {
     <div>
       <style>{css}</style>
       {!loggedIn
-        ? <LoginScreen onLogin={() => setLoggedIn(true)} />
-        : <BossPanel records={records} updateRecords={updateRecords} onLogout={() => setLoggedIn(false)} />
+        ? <LoginScreen onLogin={()=>setLoggedIn(true)} />
+        : <BossPanel records={records} memo={memo} updateRecords={updateRecords} updateMemo={updateMemo} onLogout={()=>setLoggedIn(false)} />
       }
     </div>
   );
@@ -302,233 +485,257 @@ export default function App() {
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
-  const [pass, setPass]   = useState("");
-  const [error, setError] = useState("");
+  const [pass, setPass] = useState("");
+  const [err, setErr]   = useState("");
 
   function handle() {
-    if (pass === BOSS_PASSWORD) { setError(""); onLogin(); }
-    else setError("Password non corretta.");
+    if (pass===BOSS_PASSWORD) { setErr(""); onLogin(); }
+    else setErr("Password non corretta. Riprova.");
   }
 
   return (
-    <div className="login-wrap">
+    <div className="login-bg">
       <div className="login-card">
-        <span className="brand-icon">🌳</span>
+        <img src="/icon-512.png" className="login-logo" onError={e=>{e.target.style.display='none'}} />
         <div className="login-title">Green Service</div>
-        <div className="login-sub">Pannello presenze — accesso riservato</div>
-        {error && <div className="error-msg">⚠️ {error}</div>}
-        <div className="field">
-          <label>Password</label>
-          <input type="password" placeholder="••••••••" value={pass} onChange={e=>setPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()} autoFocus />
+        <div className="login-sub">GESTIONE PRESENZE · ACCESSO RISERVATO</div>
+        {err && <div className="err">{err}</div>}
+        <div className="input-wrap">
+          <label className="input-label">Password</label>
+          <input className="input-field" type="password" placeholder="Inserisci la password" value={pass} onChange={e=>setPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()} autoFocus />
         </div>
-        <button className="btn-primary" onClick={handle}>🔑 Accedi</button>
+        <button className="btn-login" onClick={handle}>Accedi →</button>
       </div>
     </div>
   );
 }
 
 // ─── BOSS PANEL ───────────────────────────────────────────────────────────────
-function BossPanel({ records, updateRecords, onLogout }) {
-  const [tab, setTab]           = useState("oggi");
-  const [msg, setMsg]           = useState({ type:"", text:"" });
-  const [selectedWorker, setSelectedWorker] = useState(null);
-  const [entryTime, setEntryTime] = useState("");
-  const [exitTime, setExitTime]   = useState("");
+function BossPanel({ records, memo, updateRecords, updateMemo, onLogout }) {
+  const [tab, setTab]             = useState("oggi");
+  const [toast, setToast]         = useState(null);
+  const [modal, setModal]         = useState(null); // {type: 'segna'|'tutti'|'chiudi'|'completa'|'memo'}
+  const [selWorker, setSelWorker] = useState("");
+  const [entryT, setEntryT]       = useState("");
+  const [exitT, setExitT]         = useState("");
   const [site, setSite]           = useState("");
   const [customSite, setCustomSite] = useState("");
   const [presDate, setPresDate]   = useState(today());
-  const [editingId, setEditingId] = useState(null);
-  const [editData, setEditData]   = useState({});
+  const [tuttiT, setTuttiT]       = useState("");
+  const [tuttiSite, setTuttiSite] = useState("");
+  const [tuttiExitT, setTuttiExitT] = useState("");
+  const [memoText, setMemoText]   = useState(memo);
   const [filterWorker, setFilter] = useState("all");
   const [filterMonth, setFilterMonth] = useState(monthKey(today()));
-  const [tuttiOrario, setTuttiOrario] = useState("");
-  const [tuttiSite, setTuttiSite]     = useState("");
-  const [showTutti, setShowTutti]     = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editData, setEditData]   = useState({});
   const todayStr = today();
 
-  function showMsg(type, text) { setMsg({type, text}); setTimeout(()=>setMsg({type:"",text:""}), 3000); }
-
-  // Stato operaio oggi
-  function getWorkerToday(name) {
-    return records.find(r => r.worker===name && r.date===todayStr);
+  function showToast(msg, type="ok") {
+    setToast({msg,type}); setTimeout(()=>setToast(null),2500);
   }
 
-  // Ore e giornate per periodo
-  function getStats(name, period="month") {
-    const filtered = records.filter(r => {
-      if (r.worker!==name || !r.exit) return false;
-      if (period==="month") return monthKey(r.date)===monthKey(todayStr);
-      if (period==="week")  return weekKey(r.date)===weekKey(todayStr);
-      return true;
-    });
-    return {
-      hours: filtered.reduce((s,r)=>s+calcHours(r.entry,r.exit),0),
-      days: filtered.length
-    };
+  function getToday(name) { return records.find(r=>r.worker===name&&r.date===todayStr); }
+
+  function getStats(name) {
+    const m = records.filter(r=>r.worker===name&&r.exit&&monthKey(r.date)===monthKey(todayStr));
+    return { hours:m.reduce((s,r)=>s+calcHours(r.entry,r.exit),0), days:m.length };
   }
 
-  // Segna presenza
-  async function segnIngresso() {
-    if (!selectedWorker) { showMsg("error","Seleziona un operaio."); return; }
-    if (!entryTime) { showMsg("error","Seleziona l'orario."); return; }
-    const finalSite = site==="Altro..."?customSite.trim():site;
-    if (!finalSite) { showMsg("error","Seleziona il cantiere."); return; }
-    const existing = records.find(r=>r.worker===selectedWorker&&r.date===presDate);
-    if (existing?.entry) { showMsg("error",`${selectedWorker} ha già l'ingresso segnato per questa data.`); return; }
-    const newRec = { id:Date.now(), worker:selectedWorker, date:presDate, entry:entryTime, exit:null, site:finalSite };
-    await updateRecords([...records, newRec]);
-    showMsg("success",`✅ Ingresso ${selectedWorker} segnato alle ${entryTime}`);
-    setEntryTime(""); setSite(""); setCustomSite("");
+  function getFinalSite(s, custom) { return s==="Altro..."?custom.trim():s; }
+
+  async function doSegnaIngresso() {
+    if (!selWorker||!entryT) { showToast("Compila tutti i campi","error"); return; }
+    const fs = getFinalSite(site, customSite);
+    if (!fs) { showToast("Seleziona il cantiere","error"); return; }
+    const exists = records.find(r=>r.worker===selWorker&&r.date===presDate);
+    if (exists?.entry) { showToast(`${selWorker} ha già l'ingresso`,"error"); return; }
+    await updateRecords([...records,{id:Date.now(),worker:selWorker,date:presDate,entry:entryT,exit:null,site:fs}]);
+    showToast(`✅ Ingresso ${selWorker} segnato alle ${entryT}`);
+    setModal(null); setEntryT(""); setSite(""); setCustomSite("");
   }
 
-  async function segnUscita() {
-    if (!selectedWorker) { showMsg("error","Seleziona un operaio."); return; }
-    if (!exitTime) { showMsg("error","Seleziona l'orario."); return; }
-    const rec = records.find(r=>r.worker===selectedWorker&&r.date===presDate);
-    if (!rec) { showMsg("error",`${selectedWorker} non ha l'ingresso segnato per questa data.`); return; }
-    if (rec.exit) { showMsg("error",`${selectedWorker} ha già l'uscita segnata.`); return; }
-    await updateRecords(records.map(r=>r.id===rec.id?{...r,exit:exitTime}:r));
-    showMsg("success",`✅ Uscita ${selectedWorker} segnata alle ${exitTime}`);
-    setExitTime("");
+  async function doSegnaUscita() {
+    if (!selWorker||!exitT) { showToast("Compila tutti i campi","error"); return; }
+    const rec = records.find(r=>r.worker===selWorker&&r.date===presDate);
+    if (!rec) { showToast(`${selWorker} non ha l'ingresso`,"error"); return; }
+    if (rec.exit) { showToast(`${selWorker} ha già l'uscita`,"error"); return; }
+    await updateRecords(records.map(r=>r.id===rec.id?{...r,exit:exitT}:r));
+    showToast(`✅ Uscita ${selWorker} alle ${exitT}`);
+    setModal(null); setExitT("");
   }
 
-  // Segna tutti
-  async function segnaTutti() {
-    if (!tuttiOrario) { showMsg("error","Seleziona l'orario per tutti."); return; }
-    const finalSite = tuttiSite==="Altro..."?customSite.trim():tuttiSite;
-    if (!finalSite) { showMsg("error","Seleziona il cantiere."); return; }
-    const newRecs = [...records];
-    WORKERS.forEach(w => {
-      const existing = newRecs.find(r=>r.worker===w&&r.date===todayStr);
-      if (!existing) {
-        newRecs.push({ id:Date.now()+Math.random(), worker:w, date:todayStr, entry:tuttiOrario, exit:null, site:finalSite });
-      }
+  async function doTutti() {
+    if (!tuttiT||!tuttiSite) { showToast("Compila tutti i campi","error"); return; }
+    const fs = getFinalSite(tuttiSite, customSite);
+    const newRecs=[...records];
+    WORKERS.forEach(w=>{
+      if (!newRecs.find(r=>r.worker===w&&r.date===todayStr))
+        newRecs.push({id:Date.now()+Math.random(),worker:w,date:todayStr,entry:tuttiT,exit:null,site:fs});
     });
     await updateRecords(newRecs);
-    showMsg("success",`✅ Ingresso segnato per tutti alle ${tuttiOrario}`);
-    setTuttiOrario(""); setTuttiSite(""); setShowTutti(false);
+    showToast(`✅ Tutti entrati alle ${tuttiT}`);
+    setModal(null); setTuttiT(""); setTuttiSite("");
   }
 
-  // Elimina
-  async function deleteRecord(id) {
-    if (!window.confirm("Vuoi eliminare questa presenza?")) return;
+  async function doChiudiTutti() {
+    if (!tuttiExitT) { showToast("Seleziona l'orario","error"); return; }
+    const updated = records.map(r=>{
+      if (r.date===todayStr&&r.entry&&!r.exit) return {...r,exit:tuttiExitT};
+      return r;
+    });
+    await updateRecords(updated);
+    showToast(`✅ Giornata chiusa per tutti alle ${tuttiExitT}`);
+    setModal(null); setTuttiExitT("");
+  }
+
+  async function doCompleta() {
+    if (!tuttiT||!tuttiExitT||!tuttiSite) { showToast("Compila tutti i campi","error"); return; }
+    const fs = getFinalSite(tuttiSite, customSite);
+    const newRecs=[...records];
+    WORKERS.forEach(w=>{
+      if (!newRecs.find(r=>r.worker===w&&r.date===todayStr))
+        newRecs.push({id:Date.now()+Math.random(),worker:w,date:todayStr,entry:tuttiT,exit:tuttiExitT,site:fs});
+    });
+    await updateRecords(newRecs);
+    showToast(`✅ Giornata completa per tutti`);
+    setModal(null); setTuttiT(""); setTuttiExitT(""); setTuttiSite("");
+  }
+
+  async function deletePres(id) {
+    if (!window.confirm("Eliminare questa presenza?")) return;
     await updateRecords(records.filter(r=>r.id!==id));
+    showToast("Presenza eliminata");
   }
 
-  // Edit
   function startEdit(r) {
     setEditingId(r.id);
     setEditData({date:r.date,worker:r.worker,entry:r.entry||"",exit:r.exit||"",site:r.site||""});
   }
   async function saveEdit(id) {
     await updateRecords(records.map(r=>r.id===id?{...r,...editData}:r));
-    setEditingId(null);
+    setEditingId(null); showToast("Modificato");
   }
 
-  // Filtered records for table
-  const filteredRecords = records
-    .filter(r => {
-      if (filterWorker!=="all" && r.worker!==filterWorker) return false;
-      if (filterMonth && monthKey(r.date)!==filterMonth) return false;
-      return true;
-    })
+  async function doSaveMemo() {
+    await updateMemo(memoText);
+    setModal(null); showToast("Memo salvato");
+  }
+
+  const filteredRecs = records
+    .filter(r=>(filterWorker==="all"||r.worker===filterWorker)&&(!filterMonth||monthKey(r.date)===filterMonth))
     .sort((a,b)=>b.date.localeCompare(a.date));
 
-  // Week days for weekly view
   const weekStart = new Date(weekKey(todayStr)+"T12:00:00");
-  const weekDays = Array.from({length:7}, (_,i) => {
-    const d = new Date(weekStart); d.setDate(weekStart.getDate()+i);
-    return d.toISOString().slice(0,10);
+  const weekDays = Array.from({length:7},(_,i)=>{
+    const d=new Date(weekStart);d.setDate(weekStart.getDate()+i);return d.toISOString().slice(0,10);
   });
 
-  const exportLabel = filterMonth || "tutto";
+  const todayEntered = WORKERS.filter(w=>getToday(w)?.entry).length;
+  const todayDone    = WORKERS.filter(w=>getToday(w)?.exit).length;
 
   return (
-    <div>
+    <div style={{paddingBottom:0}}>
+      {/* HEADER */}
       <div className="header">
-        <div className="header-logo">🌳 Green Service <span className="header-badge">CAPO</span></div>
-        <button className="logout-btn" onClick={onLogout}>Esci</button>
-      </div>
-      <div className="main">
-        <div className="page-title">Buongiorno! 👋</div>
-        <div className="page-date">{new Date().toLocaleDateString("it-IT",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</div>
-
-        {/* TABS */}
-        <div className="tabs">
-          {[["oggi","📋 Oggi"],["segna","✏️ Segna Presenza"],["riepilogo","📊 Riepilogo"],["settimana","📅 Settimana"]].map(([id,label])=>(
-            <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
-          ))}
+        <div className="header-left">
+          <img src="/icon-192.png" className="header-logo-img" onError={e=>{e.target.style.display='none'}} />
+          <div>
+            <div className="header-name">Green Service</div>
+            <div className="header-date">{new Date().toLocaleDateString("it-IT",{weekday:"long",day:"numeric",month:"long"})}</div>
+          </div>
         </div>
+        <button className="btn-exit" onClick={onLogout}>Esci</button>
+      </div>
 
-        {msg.text && <div className={msg.type==="error"?"error-msg2":"success-msg"}>{msg.text}</div>}
+      {/* TOAST */}
+      {toast && <div className={`toast ${toast.type==="error"?"error":""}`}>{toast.msg}</div>}
+
+      {/* CONTENT */}
+      <div className="main">
+
+        {/* MEMO */}
+        {memo && (
+          <div className="memo-banner" onClick={()=>{setMemoText(memo);setModal("memo")}}>
+            <div className="memo-dot"></div>
+            <div className="memo-text">{memo}</div>
+            <span className="memo-edit">✏️</span>
+          </div>
+        )}
 
         {/* TAB OGGI */}
         {tab==="oggi" && (
           <>
-            {/* Segna tutti */}
-            <div className="tutti-card">
-              <div className="tutti-text">
-                <div className="tutti-title">⚡ Segna tutti entrati</div>
-                <div className="tutti-sub">Usa quando arrivate tutti insieme allo stesso cantiere</div>
+            {/* Stato del giorno */}
+            <div style={{display:"flex",gap:10,marginBottom:18}}>
+              <div style={{flex:1,background:"var(--panna)",border:"1.5px solid var(--border)",borderRadius:14,padding:"14px 16px",textAlign:"center"}}>
+                <div style={{fontFamily:"Cormorant Garamond,serif",fontSize:30,fontWeight:700,color:"var(--green)"}}>{todayEntered}</div>
+                <div style={{fontSize:11,color:"var(--muted)",fontWeight:600,letterSpacing:.5,textTransform:"uppercase"}}>In cantiere</div>
               </div>
-              <button className="btn-white" onClick={()=>setShowTutti(!showTutti)}>
-                {showTutti ? "Annulla" : "Segna tutti →"}
+              <div style={{flex:1,background:"var(--panna)",border:"1.5px solid var(--border)",borderRadius:14,padding:"14px 16px",textAlign:"center"}}>
+                <div style={{fontFamily:"Cormorant Garamond,serif",fontSize:30,fontWeight:700,color:"var(--gold)"}}>{todayDone}</div>
+                <div style={{fontSize:11,color:"var(--muted)",fontWeight:600,letterSpacing:.5,textTransform:"uppercase"}}>Usciti</div>
+              </div>
+              <div style={{flex:1,background:"var(--panna)",border:"1.5px solid var(--border)",borderRadius:14,padding:"14px 16px",textAlign:"center"}}>
+                <div style={{fontFamily:"Cormorant Garamond,serif",fontSize:30,fontWeight:700,color:"var(--muted)"}}>{WORKERS.length-todayEntered}</div>
+                <div style={{fontSize:11,color:"var(--muted)",fontWeight:600,letterSpacing:.5,textTransform:"uppercase"}}>Assenti</div>
+              </div>
+            </div>
+
+            {/* Azioni rapide */}
+            <div className="section-title" style={{marginBottom:12}}>⚡ Azioni Rapide</div>
+            <div className="quick-grid">
+              <button className="quick-btn green" onClick={()=>setModal("tutti")}>
+                <span className="quick-icon">🌅</span>
+                <span className="quick-label">Tutti Entrati</span>
+                <span className="quick-sub">Segna ingresso a tutti</span>
+              </button>
+              <button className="quick-btn gold" onClick={()=>setModal("chiudi")}>
+                <span className="quick-icon">🌇</span>
+                <span className="quick-label">Chiudi Giornata</span>
+                <span className="quick-sub">Uscita a chi è entrato</span>
+              </button>
+              <button className="quick-btn" style={{background:"linear-gradient(135deg,#2A4A5A,#3A7A8A)",border:"none",color:"white"}} onClick={()=>setModal("completa")}>
+                <span className="quick-icon">✅</span>
+                <span className="quick-label">Giornata Completa</span>
+                <span className="quick-sub">Entrata + Uscita tutti</span>
+              </button>
+              <button className="quick-btn" onClick={()=>{setMemoText(memo);setModal("memo")}}>
+                <span className="quick-icon">📝</span>
+                <span className="quick-label">Memo Giornaliero</span>
+                <span className="quick-sub">{memo?"Modifica nota":"Aggiungi nota"}</span>
               </button>
             </div>
 
-            {showTutti && (
-              <div className="presence-form" style={{marginBottom:20}}>
-                <div className="form-grid">
-                  <div className="field" style={{marginBottom:0}}>
-                    <label>Orario ingresso</label>
-                    <select value={tuttiOrario} onChange={e=>setTuttiOrario(e.target.value)}>
-                      <option value="">— Seleziona —</option>
-                      {TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}
-                    </select>
-                  </div>
-                  <div className="field" style={{marginBottom:0}}>
-                    <label>Cantiere</label>
-                    <select value={tuttiSite} onChange={e=>setTuttiSite(e.target.value)}>
-                      <option value="">— Seleziona —</option>
-                      {SITES.map(s=><option key={s} value={s}>{s}</option>)}
-                    </select>
-                  </div>
-                </div>
-                {tuttiSite==="Altro..." && (
-                  <div className="field" style={{marginTop:12,marginBottom:0}}>
-                    <label>Descrivi il lavoro</label>
-                    <input type="text" placeholder="Es: Potatura privata..." value={customSite} onChange={e=>setCustomSite(e.target.value)} />
-                  </div>
-                )}
-                <div className="btn-row">
-                  <button className="btn-green" onClick={segnaTutti}>✅ Conferma per tutti</button>
-                </div>
-              </div>
-            )}
-
-            {/* Carte operai */}
-            <div className="section-label">Situazione operai oggi</div>
-            <div className="workers-grid">
-              {WORKERS.map(w => {
-                const rec = getWorkerToday(w);
-                const stats = getStats(w);
-                const status = rec?.exit ? "done" : rec?.entry ? "working" : "absent";
+            {/* Operai */}
+            <div className="section-title">
+              👷 Operai
+              <span className="section-sub">Tocca per segnare presenza</span>
+            </div>
+            <div className="workers-list">
+              {WORKERS.map((w,i)=>{
+                const rec=getToday(w);
+                const stats=getStats(w);
+                const status=rec?.exit?"done":rec?.entry?"working":"absent";
+                const statusColor=status==="done"?"#2D5A27":status==="working"?"#C8A84B":"#ccc";
                 return (
-                  <div key={w} className="worker-card" onClick={()=>{setSelectedWorker(w);setTab("segna")}}>
-                    <div className="worker-name">{w}</div>
-                    <div className="worker-status">
-                      <div className={`status-dot ${status==="done"?"dot-orange":status==="working"?"dot-green":"dot-gray"}`}></div>
-                      <span>{status==="done"?`${rec.entry} → ${rec.exit}`:status==="working"?`Entrato ${rec.entry}`:"Non registrato"}</span>
+                  <div key={w} className="worker-card"
+                    style={{"--status-color":statusColor}}
+                    onClick={()=>{setSelWorker(w);setPresDate(today());setModal("segna")}}>
+                    <div className="worker-avatar" style={{background:AVATAR_COLORS[i%AVATAR_COLORS.length]}}>
+                      {w.slice(0,2).toUpperCase()}
+                    </div>
+                    <div className="worker-info">
+                      <div className="worker-name">{w}</div>
+                      <div>
+                        {status==="done" && <span className="status-pill pill-done">✅ {rec.entry} → {rec.exit}</span>}
+                        {status==="working" && <span className="status-pill pill-work">🌿 Entrato {rec.entry}</span>}
+                        {status==="absent" && <span className="status-pill pill-absent">— Non registrato</span>}
+                      </div>
                     </div>
                     <div className="worker-stats">
-                      <div className="wstat">
-                        <div className="wstat-num">{stats.hours.toFixed(1)}</div>
-                        <div className="wstat-label">ore/mese</div>
-                      </div>
-                      <div className="wstat">
-                        <div className="wstat-num">{stats.days}</div>
-                        <div className="wstat-label">gg/mese</div>
-                      </div>
+                      <div className="stat-hours">{stats.hours.toFixed(1)}h</div>
+                      <div className="stat-days">{stats.days} GG MESE</div>
                     </div>
                   </div>
                 );
@@ -539,51 +746,51 @@ function BossPanel({ records, updateRecords, onLogout }) {
 
         {/* TAB SEGNA */}
         {tab==="segna" && (
-          <div className="presence-form">
+          <div className="form-card">
             <div className="form-title">✏️ Segna Presenza</div>
             <div className="form-grid">
               <div className="field">
-                <label>Operaio</label>
-                <select value={selectedWorker||""} onChange={e=>setSelectedWorker(e.target.value)}>
-                  <option value="">— Seleziona operaio —</option>
+                <label className="field-label">Operaio</label>
+                <select value={selWorker} onChange={e=>setSelWorker(e.target.value)}>
+                  <option value="">— Seleziona —</option>
                   {WORKERS.map(w=><option key={w} value={w}>{w}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Data</label>
+                <label className="field-label">Data</label>
                 <input type="date" value={presDate} onChange={e=>setPresDate(e.target.value)} />
               </div>
               <div className="field">
-                <label>Orario ingresso</label>
-                <select value={entryTime} onChange={e=>setEntryTime(e.target.value)}>
-                  <option value="">— Seleziona —</option>
+                <label className="field-label">Ingresso</label>
+                <select value={entryT} onChange={e=>setEntryT(e.target.value)}>
+                  <option value="">— Orario —</option>
                   {TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Orario uscita</label>
-                <select value={exitTime} onChange={e=>setExitTime(e.target.value)}>
-                  <option value="">— Seleziona —</option>
+                <label className="field-label">Uscita</label>
+                <select value={exitT} onChange={e=>setExitT(e.target.value)}>
+                  <option value="">— Orario —</option>
                   {TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
-              <div className="field" style={{gridColumn:"1/-1"}}>
-                <label>Cantiere</label>
-                <select value={site} onChange={e=>setSite(e.target.value)}>
-                  <option value="">— Seleziona cantiere —</option>
-                  {SITES.map(s=><option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              {site==="Altro..." && (
-                <div className="field" style={{gridColumn:"1/-1"}}>
-                  <label>Descrivi il lavoro</label>
-                  <input type="text" placeholder="Es: Potatura privata Via Roma 12..." value={customSite} onChange={e=>setCustomSite(e.target.value)} />
-                </div>
-              )}
             </div>
+            <div className="field">
+              <label className="field-label">Cantiere</label>
+              <select value={site} onChange={e=>setSite(e.target.value)}>
+                <option value="">— Seleziona cantiere —</option>
+                {SITES.map(s=><option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            {site==="Altro..." && (
+              <div className="field">
+                <label className="field-label">Descrivi il lavoro</label>
+                <input type="text" placeholder="Es: Potatura privata..." value={customSite} onChange={e=>setCustomSite(e.target.value)} />
+              </div>
+            )}
             <div className="btn-row">
-              <button className="btn-green" onClick={segnIngresso}>🌅 Segna Ingresso</button>
-              <button className="btn-yellow" onClick={segnUscita}>🌇 Segna Uscita</button>
+              <button className="btn-action primary" onClick={doSegnaIngresso}>🌅 Segna Ingresso</button>
+              <button className="btn-action secondary" onClick={doSegnaUscita}>🌇 Segna Uscita</button>
             </div>
           </div>
         )}
@@ -591,103 +798,68 @@ function BossPanel({ records, updateRecords, onLogout }) {
         {/* TAB RIEPILOGO */}
         {tab==="riepilogo" && (
           <>
-            {/* Filtri */}
             <div className="filter-row">
               <div className="field">
-                <label>Mese</label>
-                <input type="month" value={filterMonth} onChange={e=>setFilterMonth(e.target.value)}
-                  style={{padding:"10px 14px",borderRadius:8,border:"1.5px solid var(--border)",background:"var(--panna)",fontFamily:"DM Sans,sans-serif",fontSize:14,outline:"none"}} />
+                <label className="field-label">Mese</label>
+                <input type="month" value={filterMonth} onChange={e=>setFilterMonth(e.target.value)} />
               </div>
               <div className="field">
-                <label>Operaio</label>
+                <label className="field-label">Operaio</label>
                 <select value={filterWorker} onChange={e=>setFilter(e.target.value)}>
                   <option value="all">Tutti</option>
                   {WORKERS.map(w=><option key={w} value={w}>{w}</option>)}
                 </select>
               </div>
-              <div className="export-btns">
-                <button onClick={()=>exportExcel(filteredRecords,exportLabel)} style={{background:"#1D6F42",color:"white",border:"none",padding:"10px 14px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>📊 Excel</button>
-                <button onClick={()=>exportPDF(filteredRecords,exportLabel)} style={{background:"#C0392B",color:"white",border:"none",padding:"10px 14px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600}}>📄 PDF</button>
+              <div className="export-row">
+                <button className="btn-export" style={{background:"#1D6F42",color:"white"}} onClick={()=>exportExcel(filteredRecs,filterMonth||"tutto")}>📊</button>
+                <button className="btn-export" style={{background:"#C0392B",color:"white"}} onClick={()=>exportPDF(filteredRecs,filterMonth||"tutto")}>📄</button>
               </div>
             </div>
 
-            {/* Riepilogo per operaio */}
-            <div className="section-label">Ore e giornate — {filterMonth}</div>
+            <div className="section-title" style={{marginBottom:12}}>Ore e Giornate</div>
             <div className="summary-grid">
-              {(filterWorker==="all"?WORKERS:[filterWorker]).map(w => {
-                const recs = records.filter(r=>r.worker===w&&r.exit&&monthKey(r.date)===filterMonth);
-                const hours = recs.reduce((s,r)=>s+calcHours(r.entry,r.exit),0);
-                const days = recs.length;
+              {(filterWorker==="all"?WORKERS:[filterWorker]).map(w=>{
+                const recs=records.filter(r=>r.worker===w&&r.exit&&(!filterMonth||monthKey(r.date)===filterMonth));
                 return (
-                  <div className="summary-card" key={w}>
+                  <div className="sum-card" key={w}>
                     <div className="sum-name">{w}</div>
-                    <div className="sum-hours">{hours.toFixed(1)}<span style={{fontSize:14,color:"var(--muted)",marginLeft:2}}>h</span></div>
-                    <div className="sum-days">{days} giornate</div>
+                    <div className="sum-h">{recs.reduce((s,r)=>s+calcHours(r.entry,r.exit),0).toFixed(1)}<span style={{fontSize:14,color:"var(--muted)",marginLeft:2}}>h</span></div>
+                    <div className="sum-d">{recs.length} giornate</div>
                   </div>
                 );
               })}
             </div>
 
-            {/* Tabella dettaglio */}
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-              <div className="section-label" style={{marginBottom:0,flex:1}}>Dettaglio presenze</div>
-              <button onClick={()=>{
+              <div className="section-title" style={{marginBottom:0}}>Dettaglio</div>
+              <button onClick={async()=>{
                 const nr={id:Date.now(),worker:WORKERS[0],date:today(),entry:"",exit:null,site:null};
-                updateRecords([...records,nr]);
+                await updateRecords([...records,nr]);
                 startEdit(nr);
-                setTab("riepilogo");
-              }} style={{background:"var(--green)",color:"white",border:"none",padding:"7px 14px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,marginLeft:16}}>＋ Aggiungi</button>
+              }} style={{background:"var(--green)",color:"white",border:"none",padding:"8px 14px",borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:600}}>＋ Aggiungi</button>
             </div>
-            <div className="table-wrap">
-              {filteredRecords.length===0
-                ? <div className="no-records">🌱 Nessuna presenza per questo periodo.</div>
-                : <table className="rtable">
-                    <thead><tr>
-                      <th>Data</th><th>Operaio</th><th>Ingresso</th><th>Uscita</th><th>Ore</th><th>Giornata</th><th>Cantiere</th><th>Stato</th><th>Azioni</th>
-                    </tr></thead>
+            <div className="tbl-wrap">
+              {filteredRecs.length===0
+                ? <div className="no-data">🌱 Nessuna presenza per questo periodo</div>
+                : <table className="tbl">
+                    <thead><tr><th>Data</th><th>Operaio</th><th>Ing.</th><th>Usc.</th><th>Ore</th><th>Gg</th><th>Cantiere</th><th></th></tr></thead>
                     <tbody>
-                      {filteredRecords.map(r => {
-                        const h = r.exit?calcHours(r.entry,r.exit):null;
-                        const isEdit = editingId===r.id;
+                      {filteredRecs.map(r=>{
+                        const h=r.exit?calcHours(r.entry,r.exit):null;
+                        const isE=editingId===r.id;
                         return (
-                          <tr key={r.id} style={{background:isEdit?"#F0F7EE":""}}>
-                            <td>{isEdit
-                              ? <input type="date" value={editData.date} onChange={e=>setEditData({...editData,date:e.target.value})} style={{fontSize:12,padding:"3px",border:"1px solid #ccc",borderRadius:3,width:120}} />
-                              : <span style={{color:r.date===todayStr?"var(--green)":"var(--text)",fontWeight:r.date===todayStr?600:400}}>{formatDate(r.date)}</span>}
-                            </td>
-                            <td>{isEdit
-                              ? <select value={editData.worker} onChange={e=>setEditData({...editData,worker:e.target.value})} style={{fontSize:12,padding:"3px"}}>{WORKERS.map(w=><option key={w} value={w}>{w}</option>)}</select>
-                              : <b>{r.worker}</b>}
-                            </td>
-                            <td>{isEdit
-                              ? <select value={editData.entry} onChange={e=>setEditData({...editData,entry:e.target.value})} style={{fontSize:12,padding:"3px"}}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select>
-                              : r.entry||"—"}
-                            </td>
-                            <td>{isEdit
-                              ? <select value={editData.exit} onChange={e=>setEditData({...editData,exit:e.target.value})} style={{fontSize:12,padding:"3px"}}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select>
-                              : r.exit||"—"}
-                            </td>
-                            <td style={{fontFamily:"Playfair Display,serif",fontWeight:700,color:"var(--green)"}}>
-                              {isEdit?(editData.entry&&editData.exit?`${calcHours(editData.entry,editData.exit).toFixed(1)}h`:"—"):(h!==null?`${h.toFixed(1)}h`:"—")}
-                            </td>
+                          <tr key={r.id} style={{background:isE?"#F0F7EE":""}}>
+                            <td>{isE?<input type="date" value={editData.date} onChange={e=>setEditData({...editData,date:e.target.value})} style={{fontSize:11,padding:"2px 4px",border:"1px solid #ccc",borderRadius:4,width:100}} />:<span style={{color:r.date===todayStr?"var(--green)":"inherit",fontWeight:r.date===todayStr?600:400}}>{fmtDate(r.date)}</span>}</td>
+                            <td>{isE?<select value={editData.worker} onChange={e=>setEditData({...editData,worker:e.target.value})} style={{fontSize:11,padding:"2px 4px"}}>{WORKERS.map(w=><option key={w} value={w}>{w}</option>)}</select>:<b>{r.worker}</b>}</td>
+                            <td>{isE?<select value={editData.entry} onChange={e=>setEditData({...editData,entry:e.target.value})} style={{fontSize:11,padding:"2px 4px"}}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select>:r.entry||"—"}</td>
+                            <td>{isE?<select value={editData.exit} onChange={e=>setEditData({...editData,exit:e.target.value})} style={{fontSize:11,padding:"2px 4px"}}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select>:r.exit||"—"}</td>
+                            <td style={{fontFamily:"Cormorant Garamond,serif",fontWeight:700,color:"var(--green)",fontSize:14}}>{isE?(editData.entry&&editData.exit?`${calcHours(editData.entry,editData.exit).toFixed(1)}h`:"—"):(h!==null?`${h.toFixed(1)}h`:"—")}</td>
                             <td style={{textAlign:"center"}}>{r.exit?"✅":"—"}</td>
-                            <td>{isEdit
-                              ? <select value={editData.site} onChange={e=>setEditData({...editData,site:e.target.value})} style={{fontSize:12,padding:"3px",maxWidth:140}}><option value="">—</option>{SITES.map(s=><option key={s} value={s}>{s}</option>)}</select>
-                              : <span style={{color:"var(--muted)",fontSize:12}}>{r.site||"—"}</span>}
-                            </td>
+                            <td>{isE?<select value={editData.site} onChange={e=>setEditData({...editData,site:e.target.value})} style={{fontSize:11,padding:"2px 4px",maxWidth:120}}><option value="">—</option>{SITES.map(s=><option key={s} value={s}>{s}</option>)}</select>:<span style={{color:"var(--muted)",fontSize:11}}>{r.site||"—"}</span>}</td>
                             <td>
-                              {r.exit?<span className="pill pill-green">✅</span>:r.entry?<span className="pill pill-yellow">🌿</span>:<span className="pill pill-gray">—</span>}
-                            </td>
-                            <td>
-                              {isEdit
-                                ? <div style={{display:"flex",gap:4}}>
-                                    <button onClick={()=>saveEdit(r.id)} style={{background:"var(--green)",color:"white",border:"none",padding:"4px 8px",borderRadius:4,cursor:"pointer",fontSize:12}}>✅</button>
-                                    <button onClick={()=>setEditingId(null)} style={{background:"var(--beige)",border:"none",padding:"4px 8px",borderRadius:4,cursor:"pointer",fontSize:12}}>✖</button>
-                                  </div>
-                                : <div style={{display:"flex",gap:4}}>
-                                    <button onClick={()=>startEdit(r)} style={{background:"var(--beige)",border:"none",padding:"4px 8px",borderRadius:4,cursor:"pointer",fontSize:13}}>✏️</button>
-                                    <button onClick={()=>deleteRecord(r.id)} style={{background:"#FDF0EE",border:"none",padding:"4px 8px",borderRadius:4,cursor:"pointer",fontSize:13}}>🗑️</button>
-                                  </div>}
+                              {isE
+                                ?<div style={{display:"flex",gap:4}}><button onClick={()=>saveEdit(r.id)} style={{background:"var(--green)",color:"white",border:"none",padding:"4px 8px",borderRadius:6,cursor:"pointer",fontSize:11}}>✅</button><button onClick={()=>setEditingId(null)} style={{background:"var(--beige)",border:"none",padding:"4px 8px",borderRadius:6,cursor:"pointer",fontSize:11}}>✖</button></div>
+                                :<div style={{display:"flex",gap:4}}><button onClick={()=>startEdit(r)} style={{background:"var(--beige)",border:"none",padding:"4px 8px",borderRadius:6,cursor:"pointer",fontSize:12}}>✏️</button><button onClick={()=>deletePres(r.id)} style={{background:"#FDF0EE",border:"none",padding:"4px 8px",borderRadius:6,cursor:"pointer",fontSize:12}}>🗑️</button></div>}
                             </td>
                           </tr>
                         );
@@ -701,41 +873,36 @@ function BossPanel({ records, updateRecords, onLogout }) {
         {/* TAB SETTIMANA */}
         {tab==="settimana" && (
           <>
-            <div className="section-label">Vista settimanale — settimana corrente</div>
-            <div className="week-grid">
+            <div className="section-title">📅 Settimana Corrente</div>
+            <div className="week-wrap">
               <table className="week-table">
                 <thead>
                   <tr>
-                    <th style={{textAlign:"left",padding:"10px 12px"}}>Operaio</th>
+                    <th>Operaio</th>
                     {weekDays.map(d=>(
                       <th key={d}>
                         {new Date(d+"T12:00:00").toLocaleDateString("it-IT",{weekday:"short"})}<br/>
-                        <span style={{fontSize:11,opacity:.8}}>{new Date(d+"T12:00:00").toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit"})}</span>
+                        <span style={{fontSize:9,opacity:.7}}>{new Date(d+"T12:00:00").toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit"})}</span>
                       </th>
                     ))}
-                    <th>Tot. h</th>
-                    <th>Gg</th>
+                    <th>Ore</th><th>Gg</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {WORKERS.map(w => {
-                    const weekRecs = records.filter(r=>r.worker===w&&weekDays.includes(r.date));
-                    const totalH = weekRecs.filter(r=>r.exit).reduce((s,r)=>s+calcHours(r.entry,r.exit),0);
-                    const totalDays = weekRecs.filter(r=>r.exit).length;
+                  {WORKERS.map(w=>{
+                    const wRecs=records.filter(r=>r.worker===w&&weekDays.includes(r.date));
+                    const totH=wRecs.filter(r=>r.exit).reduce((s,r)=>s+calcHours(r.entry,r.exit),0);
+                    const totD=wRecs.filter(r=>r.exit).length;
                     return (
                       <tr key={w}>
-                        <td className="worker-col">{w}</td>
-                        {weekDays.map(d => {
-                          const rec = records.find(r=>r.worker===w&&r.date===d);
-                          const h = rec?.exit?calcHours(rec.entry,rec.exit):null;
-                          return (
-                            <td key={d} className={rec?.exit?"day-cell-done":rec?.entry?"day-cell-partial":"day-cell-absent"}>
-                              {rec?.exit ? `${h?.toFixed(1)}h` : rec?.entry ? "in lav." : "—"}
-                            </td>
-                          );
+                        <td className="wname">{w}</td>
+                        {weekDays.map(d=>{
+                          const rec=records.find(r=>r.worker===w&&r.date===d);
+                          const h=rec?.exit?calcHours(rec.entry,rec.exit):null;
+                          return <td key={d} className={rec?.exit?"wcell-done":rec?.entry?"wcell-wip":"wcell-no"}>{rec?.exit?`${h?.toFixed(1)}h`:rec?.entry?"…":"—"}</td>;
                         })}
-                        <td style={{fontFamily:"Playfair Display,serif",fontWeight:700,color:"var(--green)"}}>{totalH.toFixed(1)}h</td>
-                        <td style={{fontWeight:600}}>{totalDays}</td>
+                        <td className="wtot">{totH.toFixed(1)}h</td>
+                        <td style={{fontWeight:600}}>{totD}</td>
                       </tr>
                     );
                   })}
@@ -745,6 +912,101 @@ function BossPanel({ records, updateRecords, onLogout }) {
           </>
         )}
       </div>
+
+      {/* BOTTOM NAV */}
+      <div className="bottom-nav">
+        {[["oggi","📋","Oggi"],["segna","✏️","Segna"],["riepilogo","📊","Mese"],["settimana","📅","Settimana"]].map(([id,icon,label])=>(
+          <button key={id} className={`nav-item ${tab===id?"active":""}`} onClick={()=>setTab(id)}>
+            <span className="nav-icon">{icon}</span>
+            <span className="nav-label">{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* MODALS */}
+      {modal==="segna" && (
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
+          <div className="modal">
+            <div className="modal-title">✏️ Segna Presenza — {selWorker}</div>
+            <div className="form-grid" style={{marginBottom:12}}>
+              <div className="field"><label className="field-label">Data</label><input type="date" value={presDate} onChange={e=>setPresDate(e.target.value)} /></div>
+              <div className="field"><label className="field-label">Operaio</label><select value={selWorker} onChange={e=>setSelWorker(e.target.value)}>{WORKERS.map(w=><option key={w} value={w}>{w}</option>)}</select></div>
+              <div className="field"><label className="field-label">Ingresso</label><select value={entryT} onChange={e=>setEntryT(e.target.value)}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+              <div className="field"><label className="field-label">Uscita</label><select value={exitT} onChange={e=>setExitT(e.target.value)}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+            </div>
+            <div className="field"><label className="field-label">Cantiere</label><select value={site} onChange={e=>setSite(e.target.value)}><option value="">— Seleziona —</option>{SITES.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+            {site==="Altro..." && <div className="field"><label className="field-label">Descrivi</label><input type="text" value={customSite} onChange={e=>setCustomSite(e.target.value)} placeholder="Es: Potatura privata..." /></div>}
+            <div className="btn-row" style={{marginTop:16}}>
+              <button className="btn-action primary" onClick={doSegnaIngresso}>🌅 Ingresso</button>
+              <button className="btn-action secondary" onClick={doSegnaUscita}>🌇 Uscita</button>
+              <button className="btn-action danger" onClick={()=>setModal(null)}>Annulla</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal==="tutti" && (
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
+          <div className="modal">
+            <div className="modal-title">🌅 Tutti Entrati</div>
+            <div className="field"><label className="field-label">Orario Ingresso</label><select value={tuttiT} onChange={e=>setTuttiT(e.target.value)}><option value="">— Seleziona —</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+            <div className="field"><label className="field-label">Cantiere</label><select value={tuttiSite} onChange={e=>setTuttiSite(e.target.value)}><option value="">— Seleziona —</option>{SITES.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+            {tuttiSite==="Altro..." && <div className="field"><label className="field-label">Descrivi</label><input type="text" value={customSite} onChange={e=>setCustomSite(e.target.value)} placeholder="Es: Potatura privata..." /></div>}
+            <div className="btn-row" style={{marginTop:16}}>
+              <button className="btn-action primary btn-full" onClick={doTutti}>✅ Conferma per tutti</button>
+              <button className="btn-action danger btn-full" onClick={()=>setModal(null)}>Annulla</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal==="chiudi" && (
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
+          <div className="modal">
+            <div className="modal-title">🌇 Chiudi Giornata a Tutti</div>
+            <p style={{color:"var(--muted)",fontSize:13,marginBottom:16}}>Segnerà l'uscita a tutti gli operai che hanno l'ingresso ma non ancora l'uscita.</p>
+            <div className="field"><label className="field-label">Orario Uscita</label><select value={tuttiExitT} onChange={e=>setTuttiExitT(e.target.value)}><option value="">— Seleziona —</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+            <div className="btn-row" style={{marginTop:16}}>
+              <button className="btn-action primary btn-full" onClick={doChiudiTutti}>✅ Chiudi giornata</button>
+              <button className="btn-action danger btn-full" onClick={()=>setModal(null)}>Annulla</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal==="completa" && (
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
+          <div className="modal">
+            <div className="modal-title">✅ Giornata Completa</div>
+            <div className="form-grid" style={{marginBottom:12}}>
+              <div className="field"><label className="field-label">Ingresso</label><select value={tuttiT} onChange={e=>setTuttiT(e.target.value)}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+              <div className="field"><label className="field-label">Uscita</label><select value={tuttiExitT} onChange={e=>setTuttiExitT(e.target.value)}><option value="">—</option>{TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+            </div>
+            <div className="field"><label className="field-label">Cantiere</label><select value={tuttiSite} onChange={e=>setTuttiSite(e.target.value)}><option value="">— Seleziona —</option>{SITES.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+            {tuttiSite==="Altro..." && <div className="field"><label className="field-label">Descrivi</label><input type="text" value={customSite} onChange={e=>setCustomSite(e.target.value)} placeholder="Es: Potatura privata..." /></div>}
+            <div className="btn-row" style={{marginTop:16}}>
+              <button className="btn-action primary btn-full" onClick={doCompleta}>✅ Giornata completa per tutti</button>
+              <button className="btn-action danger btn-full" onClick={()=>setModal(null)}>Annulla</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal==="memo" && (
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
+          <div className="modal">
+            <div className="modal-title">📝 Memo Giornaliero</div>
+            <div className="field">
+              <label className="field-label">Nota del giorno</label>
+              <textarea value={memoText} onChange={e=>setMemoText(e.target.value)} placeholder="Es: Oggi piove, lavoriamo al coperto..." style={{width:"100%",minHeight:100,background:"var(--cream)",border:"1.5px solid var(--border)",borderRadius:12,padding:"12px 14px",fontFamily:"Outfit,sans-serif",fontSize:14,outline:"none",resize:"vertical",color:"var(--text)"}} />
+            </div>
+            <div className="btn-row" style={{marginTop:8}}>
+              <button className="btn-action primary btn-full" onClick={doSaveMemo}>💾 Salva Memo</button>
+              <button className="btn-action danger btn-full" onClick={()=>setModal(null)}>Annulla</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
